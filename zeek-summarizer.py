@@ -143,6 +143,10 @@ for file in sorted(log_files['conn']):
         if dst:
             ip_profiles[dst]['protocols'][proto] += 1
             ip_profiles[dst]['roles']['destination'] += 1
+        if args.only_conn:
+            dport = entry.get('id.resp_p')
+            if dport:
+                ip_profiles[dst]['dst_ports'][dport] += 1
 
 # DNS log
 for file in sorted(log_files['dns']):
@@ -217,4 +221,8 @@ for ip, sections in sorted(ip_profiles.items()):
     if 'snis' in sections:
         top_snis = sections['snis'].most_common(2)
         console.print("  📛 SSL SNI: " + ', '.join(f"{k} ({v})" for k, v in top_snis))
+    if args.only_conn and 'dst_ports' in sections:
+        top_ports = sections['dst_ports'].most_common(5)
+        if top_ports:
+            console.print("  🎯 Dst Ports: " + ', '.join(f"{k} ({v})" for k, v in top_ports))
 
