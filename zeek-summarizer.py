@@ -45,113 +45,84 @@ def read_lines(filepath):
         console.print(f"[bold yellow]⚠ Warning: Truncated gzip file detected:[/bold yellow] {filepath}")
 
 # ============================
-# CONN LOG SUMMARY
+# IP-CENTRIC AGGREGATION
 # ============================
-unique_ips = {
-    'src_ipv4': set(),
-    'dst_ipv4': set(),
-    'src_ipv6': set(),
-    'dst_ipv6': set(),
-}
-flow_counts = defaultdict(lambda: defaultdict(int))  # ip -> protocol -> count
-ip_activity = defaultdict(lambda: defaultdict(int))  # ip -> activity field -> count
+ip_profiles = defaultdict(lambda: defaultdict(Counter))
 
+# CONN log
 for file in sorted(log_files['conn']):
     for entry in read_lines(file):
-        orig_ip = entry.get('id.orig_h')
-        resp_ip = entry.get('id.resp_h')
-        proto = entry.get('proto', 'unknown')
+        src = entry.get('id.orig_h')
+        dst = entry.get('id.resp_h')
+        proto = entry.get('proto', '-')
+        if src:
+            ip_profiles[src]['protocols'][proto] += 1
+            ip_profiles[src]['roles']['source'] += 1
+        if dst:
+            ip_profiles[dst]['protocols'][proto] += 1
+            ip_profiles[dst]['roles']['destination'] += 1
 
-        for ip, kind in [(orig_ip, 'src'), (resp_ip, 'dst')]:
-            if not ip:
-                continue
-            try:
-                ip_obj = ipaddress.ip_address(ip)
-                ip_key = f"{kind}_ipv4" if ip_obj.version == 4 else f"{kind}_ipv6"
-                unique_ips[ip_key].add(ip)
-                flow_counts[ip][proto] += 1
-                ip_activity[ip][f"{kind}_{proto}"] += 1
-            except ValueError:
-                continue
-
-# Show IP summary table
-summary_table = [
-    ["🌍 Src IPv4", len(unique_ips['src_ipv4'])],
-    ["🌍 Dst IPv4", len(unique_ips['dst_ipv4'])],
-    ["🌐 Src IPv6", len(unique_ips['src_ipv6'])],
-    ["🌐 Dst IPv6", len(unique_ips['dst_ipv6'])],
-]
-console.print("\n[bold cyan]📊 Unique IP Address Summary[/bold cyan]")
-console.print(tabulate(summary_table, headers=["Type", "Count"], tablefmt="fancy_grid"))
-
-# Show top IPs by flows
-flow_table = []
-for ip, proto_counts in sorted(flow_counts.items(), key=lambda x: -sum(x[1].values()))[:15]:
-    total = sum(proto_counts.values())
-    proto_str = ', '.join(f"{p}:{c}" for p, c in proto_counts.items())
-    flow_table.append([ip, total, proto_str])
-console.print("\n[bold green]🔥 Top IPs by Flow Count[/bold green]")
-console.print(tabulate(flow_table, headers=["IP", "Total Flows", "Protocols"], tablefmt="fancy_grid"))
-
-# Show activity summary per IP
-ip_summary_table = []
-for ip, actions in sorted(ip_activity.items(), key=lambda x: -sum(x[1].values()))[:10]:
-    summary = ', '.join(f"{k}:{v}" for k, v in actions.items())
-    ip_summary_table.append([ip, summary])
-console.print("\n[bold green]🧾 IP Behavior Summary[/bold green]")
-console.print(tabulate(ip_summary_table, headers=["IP", "Behavior"], tablefmt="fancy_grid"))
-
-# ============================
-# DNS SUMMARY
-# ============================
-dns_queries = Counter()
+# DNS log
 for file in sorted(log_files['dns']):
     for entry in read_lines(file):
-        query = entry.get('query')
-        if query:
-            dns_queries[query] += 1
-if dns_queries:
-    dns_table = dns_queries.most_common(15)
-    console.print("\n[bold magenta]🧠 Top DNS Queries[/bold magenta]")
-    console.print(tabulate(dns_table, headers=["Domain", "Count"], tablefmt="fancy_grid"))
+        src = entry.get('id.orig_h')
+        qname = entry.get('query')
+        if src and qname:
+            ip_profiles[src]['dns_queries'][qname] += 1
+            ip_profiles[src]['roles']['dns_client'] += 1
 
-# ============================
-# HTTP SUMMARY
-# ============================
-http_hosts = Counter()
-http_uris = Counter()
+# HTTP log
 for file in sorted(log_files['http']):
     for entry in read_lines(file):
-        host = entry.get('host')
+        src = entry.get('id.orig_h')
         uri = entry.get('uri')
-        if host:
-            http_hosts[host] += 1
-        if uri:
-            http_uris[uri] += 1
-if http_hosts:
-    console.print("\n[bold blue]🌐 Top HTTP Hosts[/bold blue]")
-    console.print(tabulate(http_hosts.most_common(10), headers=["Host", "Requests"], tablefmt="fancy_grid"))
-if http_uris:
-    console.print("\n[bold blue]📄 Top HTTP URIs[/bold blue]")
-    console.print(tabulate(http_uris.most_common(10), headers=["URI", "Count"], tablefmt="fancy_grid"))
+        host = entry.get('host')
+        if src:
+            if uri:
+                ip_profiles[src]['http_uris'][uri] += 1
+            if host:
+                ip_profiles[src]['http_hosts'][host] += 1
+            ip_profiles[src]['roles']['http_client'] += 1
 
-# ============================
-# SSL SUMMARY
-# ============================
-ssl_subjects = Counter()
-ssl_issuers = Counter()
+# SSL log
 for file in sorted(log_files['ssl']):
     for entry in read_lines(file):
-        subject = entry.get('subject')
+        src = entry.get('id.orig_h')
         issuer = entry.get('issuer')
-        if subject:
-            ssl_subjects[subject] += 1
-        if issuer:
-            ssl_issuers[issuer] += 1
-if ssl_subjects:
-    console.print("\n[bold yellow]🔐 Top SSL Subjects[/bold yellow]")
-    console.print(tabulate(ssl_subjects.most_common(10), headers=["Subject", "Count"], tablefmt="fancy_grid"))
-if ssl_issuers:
-    console.print("\n[bold yellow]🏛 Top SSL Issuers[/bold yellow]")
-    console.print(tabulate(ssl_issuers.most_common(10), headers=["Issuer", "Count"], tablefmt="fancy_grid"))
+        subject = entry.get('subject')
+        if src:
+            if issuer:
+                ip_profiles[src]['ssl_issuers'][issuer] += 1
+            if subject:
+                ip_profiles[src]['ssl_subjects'][subject] += 1
+            ip_profiles[src]['roles']['ssl_client'] += 1
+
+# ============================
+# PER-IP DETAILED SUMMARY
+# ============================
+console.print("\n[bold cyan]📌 Per-IP Summary[/bold cyan]")
+for ip, sections in sorted(ip_profiles.items()):
+    total_flows = sum(sections['roles'].values())
+    console.print(f"\n[bold blue]🔹 {ip}[/bold blue] — Total roles: {total_flows}")
+    if 'protocols' in sections:
+        proto_line = ', '.join(f"{k}:{v}" for k, v in sections['protocols'].items())
+        console.print(f"  ⚙ Protocols: {proto_line}")
+    if 'roles' in sections:
+        roles_line = ', '.join(f"{k}:{v}" for k, v in sections['roles'].items())
+        console.print(f"  🧭 Roles: {roles_line}")
+    if 'dns_queries' in sections:
+        top_dns = sections['dns_queries'].most_common(3)
+        console.print("  📡 DNS Queries: " + ', '.join(f"{k} ({v})" for k, v in top_dns))
+    if 'http_hosts' in sections:
+        top_hosts = sections['http_hosts'].most_common(2)
+        console.print("  🌐 HTTP Hosts: " + ', '.join(f"{k} ({v})" for k, v in top_hosts))
+    if 'http_uris' in sections:
+        top_uris = sections['http_uris'].most_common(2)
+        console.print("  📄 HTTP URIs: " + ', '.join(f"{k} ({v})" for k, v in top_uris))
+    if 'ssl_issuers' in sections:
+        top_issuers = sections['ssl_issuers'].most_common(1)
+        console.print("  🏛 SSL Issuer: " + ', '.join(f"{k} ({v})" for k, v in top_issuers))
+    if 'ssl_subjects' in sections:
+        top_subjects = sections['ssl_subjects'].most_common(1)
+        console.print("  🔐 SSL Subject: " + ', '.join(f"{k} ({v})" for k, v in top_subjects))
 
