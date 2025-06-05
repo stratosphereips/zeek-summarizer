@@ -146,7 +146,10 @@ for file in sorted(log_files['conn']):
         if args.only_conn:
             dport = entry.get('id.resp_p')
             if dport:
-                ip_profiles[dst]['dst_ports'][dport] += 1
+                if src:
+                    ip_profiles[src]['dst_ports_as_src'][dport] += 1
+                if dst:
+                    ip_profiles[dst]['dst_ports_as_dst'][dport] += 1
 
 # DNS log
 for file in sorted(log_files['dns']):
@@ -221,8 +224,13 @@ for ip, sections in sorted(ip_profiles.items()):
     if 'snis' in sections:
         top_snis = sections['snis'].most_common(2)
         console.print("  📛 SSL SNI: " + ', '.join(f"{k} ({v})" for k, v in top_snis))
-    if args.only_conn and 'dst_ports' in sections:
-        top_ports = sections['dst_ports'].most_common(5)
-        if top_ports:
-            console.print("  🎯 Dst Ports: " + ', '.join(f"{k} ({v})" for k, v in top_ports))
+    if args.only_conn:
+        if 'dst_ports_as_src' in sections:
+            top_ports_src = sections['dst_ports_as_src'].most_common(5)
+            if top_ports_src:
+                console.print("  🎯 Dst Ports (as source): " + ', '.join(f"{k} ({v})" for k, v in top_ports_src))
+        if 'dst_ports_as_dst' in sections:
+            top_ports_dst = sections['dst_ports_as_dst'].most_common(5)
+            if top_ports_dst:
+                console.print("  🛡️ Dst Ports (as destination): " + ', '.join(f"{k} ({v})" for k, v in top_ports_dst))
 
