@@ -205,7 +205,26 @@ if args.per_port:
         for dport, count in sections.get('dst_ports_as_dst', {}).items():
             port_summary[dport]['as_target'] += count
 
-    console.print("[bold magenta]📊 Per-Port Summary[/bold magenta])[bold magenta]📊 Per-Port Summary[/bold magenta]")
+    console.print("
+[bold magenta]📊 Per-Port Summary[/bold magenta]")
+
+    # Build histogram bins
+    bin_size = 100
+    max_port = 65535
+    port_bins = defaultdict(int)
+    for port_str, counts in port_summary.items():
+        try:
+            port = int(port_str)
+            bin_label = f"{(port // bin_size) * bin_size}-{((port // bin_size) + 1) * bin_size - 1}"
+            port_bins[bin_label] += counts.get('as_dst', 0) + counts.get('as_target', 0)
+        except ValueError:
+            continue
+
+    console.print("
+[bold green]📉 Port Usage Histogram (bin size: 100)[/bold green]")
+    for label in sorted(port_bins, key=lambda x: int(x.split('-')[0])):
+        bar = '█' * min(port_bins[label] // 5, 40)  # Cap bar length for small screens
+        console.print(f"  {label.ljust(12)} | {bar} ({port_bins[label]})")[bold magenta]📊 Per-Port Summary[/bold magenta]")
     table_data = []
     for port, data in sorted(port_summary.items(), key=lambda x: int(x[0])):
         table_data.append([port, data.get('as_dst', 0), data.get('as_target', 0)])
