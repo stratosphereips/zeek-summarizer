@@ -28,6 +28,7 @@ for log_type in log_types:
         log_files[log_type] += glob.glob(os.path.join(args.directory, pattern))
 
 # Read files with TSV header support
+
 def read_lines(filepath):
     open_func = gzip.open if filepath.endswith('.gz') else open
     mode = 'rt' if filepath.endswith('.gz') else 'r'
@@ -103,6 +104,7 @@ for file in sorted(log_files['ssl']):
         src = entry.get('id.orig_h')
         issuer = entry.get('issuer')
         subject = entry.get('subject')
+        sni = entry.get('server_name')
         if src:
             all_src_ips.add(src)
             non_conn_ips.add(src)
@@ -169,11 +171,14 @@ for file in sorted(log_files['ssl']):
         src = entry.get('id.orig_h')
         issuer = entry.get('issuer')
         subject = entry.get('subject')
+        sni = entry.get('server_name')
         if src:
             if issuer:
                 ip_profiles[src]['ssl_issuers'][issuer] += 1
             if subject:
                 ip_profiles[src]['ssl_subjects'][subject] += 1
+            if sni:
+                ip_profiles[src]['snis'][sni] += 1
             ip_profiles[src]['roles']['ssl_client'] += 1
 
 # ============================
@@ -206,4 +211,7 @@ for ip, sections in sorted(ip_profiles.items()):
     if 'ssl_subjects' in sections:
         top_subjects = sections['ssl_subjects'].most_common(1)
         console.print("  🔐 SSL Subject: " + ', '.join(f"{k} ({v})" for k, v in top_subjects))
+    if 'snis' in sections:
+        top_snis = sections['snis'].most_common(2)
+        console.print("  📛 SSL SNI: " + ', '.join(f"{k} ({v})" for k, v in top_snis))
 
