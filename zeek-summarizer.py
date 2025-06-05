@@ -17,6 +17,7 @@ console = Console()
 parser = argparse.ArgumentParser(description='Summarize Zeek log files.')
 parser.add_argument('-d', '--directory', type=str, required=True, help='Zeek log directory')
 parser.add_argument('-r', '--require-activity', action='store_true', help='Only show IPs that appear in non-conn logs')
+parser.add_argument('-o', '--only-conn', action='store_true', help='Only show IPs that appear only in conn logs')
 args = parser.parse_args()
 
 # Detect files
@@ -138,7 +139,7 @@ for file in sorted(log_files['conn']):
         proto = entry.get('proto', '-')
         if src:
             ip_profiles[src]['protocols'][proto] += 1
-            ip_profiles[src]['roles']['source'] += 1
+            ip_profiles[src]['roles']['as source'] += 1
         if dst:
             ip_profiles[dst]['protocols'][proto] += 1
             ip_profiles[dst]['roles']['destination'] += 1
@@ -187,6 +188,8 @@ for file in sorted(log_files['ssl']):
 console.print("\n[bold cyan]📌 Per-IP Summary[/bold cyan]")
 for ip, sections in sorted(ip_profiles.items()):
     if args.require_activity and ip not in non_conn_ips:
+        continue
+    if args.only_conn and ip in non_conn_ips:
         continue
     total_flows = sum(sections['roles'].values())
     console.print(f"\n[bold blue]🔹 {ip}[/bold blue] — Total roles: {total_flows}")
