@@ -16,6 +16,7 @@ console = Console()
 # Argument parsing
 parser = argparse.ArgumentParser(description='Summarize Zeek log files.')
 parser.add_argument('-d', '--directory', type=str, required=True, help='Zeek log directory')
+parser.add_argument('-r', '--require-activity', action='store_true', help='Only show IPs that appear in non-conn logs')
 args = parser.parse_args()
 
 # Detect files
@@ -56,6 +57,9 @@ http_uri_counter = Counter()
 ssl_issuer_counter = Counter()
 ssl_subject_counter = Counter()
 
+# Track non-conn log activity
+non_conn_ips = set()
+
 # CONN
 for file in sorted(log_files['conn']):
     for entry in read_lines(file):
@@ -75,6 +79,7 @@ for file in sorted(log_files['dns']):
         qname = entry.get('query')
         if src:
             all_src_ips.add(src)
+            non_conn_ips.add(src)
         if qname:
             dns_query_counter[qname] += 1
 
@@ -86,6 +91,7 @@ for file in sorted(log_files['http']):
         host = entry.get('host')
         if src:
             all_src_ips.add(src)
+            non_conn_ips.add(src)
         if uri:
             http_uri_counter[uri] += 1
         if host:
@@ -99,6 +105,7 @@ for file in sorted(log_files['ssl']):
         subject = entry.get('subject')
         if src:
             all_src_ips.add(src)
+            non_conn_ips.add(src)
         if issuer:
             ssl_issuer_counter[issuer] += 1
         if subject:
@@ -174,6 +181,8 @@ for file in sorted(log_files['ssl']):
 # ============================
 console.print("\n[bold cyan]📌 Per-IP Summary[/bold cyan]")
 for ip, sections in sorted(ip_profiles.items()):
+    if args.require_activity and ip not in non_conn_ips:
+        continue
     total_flows = sum(sections['roles'].values())
     console.print(f"\n[bold blue]🔹 {ip}[/bold blue] — Total roles: {total_flows}")
     if 'protocols' in sections:
