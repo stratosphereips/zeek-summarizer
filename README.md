@@ -5,7 +5,7 @@
 ## 🔧 Installation
 
 ```bash
-git clone https://github.com/yourusername/zeek-summarizer.git
+git clone https://github.com/stratosphereips/zeek-summarizing.git
 cd zeek-summarizer
 python3 -m venv venv
 source venv/bin/activate
