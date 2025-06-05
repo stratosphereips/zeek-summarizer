@@ -45,6 +45,78 @@ def read_lines(filepath):
         console.print(f"[bold yellow]⚠ Warning: Truncated gzip file detected:[/bold yellow] {filepath}")
 
 # ============================
+# GLOBAL SUMMARY FIRST
+# ============================
+all_src_ips = set()
+all_dst_ips = set()
+proto_counter = Counter()
+dns_query_counter = Counter()
+http_host_counter = Counter()
+http_uri_counter = Counter()
+ssl_issuer_counter = Counter()
+ssl_subject_counter = Counter()
+
+# CONN
+for file in sorted(log_files['conn']):
+    for entry in read_lines(file):
+        src = entry.get('id.orig_h')
+        dst = entry.get('id.resp_h')
+        proto = entry.get('proto', '-')
+        if src:
+            all_src_ips.add(src)
+            proto_counter[proto] += 1
+        if dst:
+            all_dst_ips.add(dst)
+
+# DNS
+for file in sorted(log_files['dns']):
+    for entry in read_lines(file):
+        src = entry.get('id.orig_h')
+        qname = entry.get('query')
+        if src:
+            all_src_ips.add(src)
+        if qname:
+            dns_query_counter[qname] += 1
+
+# HTTP
+for file in sorted(log_files['http']):
+    for entry in read_lines(file):
+        src = entry.get('id.orig_h')
+        uri = entry.get('uri')
+        host = entry.get('host')
+        if src:
+            all_src_ips.add(src)
+        if uri:
+            http_uri_counter[uri] += 1
+        if host:
+            http_host_counter[host] += 1
+
+# SSL
+for file in sorted(log_files['ssl']):
+    for entry in read_lines(file):
+        src = entry.get('id.orig_h')
+        issuer = entry.get('issuer')
+        subject = entry.get('subject')
+        if src:
+            all_src_ips.add(src)
+        if issuer:
+            ssl_issuer_counter[issuer] += 1
+        if subject:
+            ssl_subject_counter[subject] += 1
+
+# Print GLOBAL SUMMARY
+console.print("\n[bold cyan]🌍 Global Summary[/bold cyan]")
+console.print(tabulate([
+    ["Unique Src IPs", len(all_src_ips)],
+    ["Unique Dst IPs", len(all_dst_ips)],
+    ["Total Protocols Seen", len(proto_counter)],
+    ["Top Protocols", ', '.join(f"{k}:{v}" for k,v in proto_counter.most_common(3))],
+    ["Top DNS Queries", ', '.join(f"{k} ({v})" for k,v in dns_query_counter.most_common(3))],
+    ["Top HTTP Hosts", ', '.join(f"{k} ({v})" for k,v in http_host_counter.most_common(3))],
+    ["Top SSL Issuers", ', '.join(f"{k} ({v})" for k,v in ssl_issuer_counter.most_common(2))],
+], headers=["Category", "Summary"], tablefmt="fancy_grid"))
+
+# ============================
 # IP-CENTRIC AGGREGATION
 # ============================
 ip_profiles = defaultdict(lambda: defaultdict(Counter))
