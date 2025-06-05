@@ -18,6 +18,7 @@ parser = argparse.ArgumentParser(description='Summarize Zeek log files.')
 parser.add_argument('-d', '--directory', type=str, required=True, help='Zeek log directory')
 parser.add_argument('-r', '--require-activity', action='store_true', help='Only show IPs that appear in non-conn logs')
 parser.add_argument('-o', '--only-conn', action='store_true', help='Only show IPs that appear only in conn logs')
+parser.add_argument('-p', '--per-port', action='store_true', help='Show summary per port instead of per IP')
 args = parser.parse_args()
 
 # Detect files
@@ -188,6 +189,28 @@ for file in sorted(log_files['ssl']):
             if sni:
                 ip_profiles[src]['snis'][sni] += 1
             ip_profiles[src]['roles']['ssl_client'] += 1
+
+# ============================
+# PER-PORT SUMMARY IF REQUESTED
+# ============================
+if args.per_port:
+    port_summary = defaultdict(lambda: defaultdict(int))
+    for ip, sections in ip_profiles.items():
+        if args.require_activity and ip not in non_conn_ips:
+            continue
+        if args.only_conn and ip in non_conn_ips:
+            continue
+        for dport, count in sections.get('dst_ports_as_src', {}).items():
+            port_summary[dport]['as_dst'] += count
+        for dport, count in sections.get('dst_ports_as_dst', {}).items():
+            port_summary[dport]['as_target'] += count
+
+    console.print("[bold magenta]📊 Per-Port Summary[/bold magenta])[bold magenta]📊 Per-Port Summary[/bold magenta]")
+    table_data = []
+    for port, data in sorted(port_summary.items(), key=lambda x: int(x[0])):
+        table_data.append([port, data.get('as_dst', 0), data.get('as_target', 0)])
+    console.print(tabulate(table_data, headers=["Port", "Used as Destination", "Targeted by Others"], tablefmt="fancy_grid"))
+    sys.exit(0)
 
 # ============================
 # PER-IP DETAILED SUMMARY
