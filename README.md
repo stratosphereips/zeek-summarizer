@@ -30,6 +30,13 @@ python zeek-summarizer.py -d <zeek_log_directory> [options]
 - `-p, --per-port`: Show summary per port instead of per IP.
 - `--debug`: Show debug information for internal operations.
 
+## Screenshots
+
+![image](https://github.com/user-attachments/assets/b2564745-bb3e-4780-9064-f9606f8c532a)
+
+![image](https://github.com/user-attachments/assets/400b673f-6e95-4c61-994b-6a56f1d30619)
+
+
 ## 📊 Examples
 
 ### Basic usage
