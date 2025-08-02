@@ -5,7 +5,7 @@
 ## 🔧 Installation
 
 ```bash
-git clone https://github.com/yourusername/zeek-summarizer.git
+git clone https://github.com/stratosphereips/zeek-summarizing.git
 cd zeek-summarizer
 python3 -m venv venv
 source venv/bin/activate
@@ -29,6 +29,13 @@ python zeek-summarizer.py -d <zeek_log_directory> [options]
 - `-o, --only-conn`: Show only IPs that appear only in conn logs.
 - `-p, --per-port`: Show summary per port instead of per IP.
 - `--debug`: Show debug information for internal operations.
+
+## Screenshots
+
+![image](https://github.com/user-attachments/assets/b2564745-bb3e-4780-9064-f9606f8c532a)
+
+![image](https://github.com/user-attachments/assets/400b673f-6e95-4c61-994b-6a56f1d30619)
+
 
 ## 📊 Examples
 

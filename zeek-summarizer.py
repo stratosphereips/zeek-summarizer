@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 import argparse
 import os
 import sys
@@ -259,7 +259,7 @@ for ip, sections in sorted(ip_profiles.items()):
         console.print("  📄 HTTP URIs: " + ', '.join(f"{k} ({v})" for k, v in top_uris))
     if 'ssl_issuers' in sections:
         top_issuers = sections['ssl_issuers'].most_common(1)
-        console.print("  🏛 SSL Issuer: " + ', '.join(f"{k} ({v})" for k, v in top_issuers))
+        console.print("  🏛 SSL  Issuer: " + ', '.join(f"{k} ({v})" for k, v in top_issuers))
     if 'ssl_subjects' in sections:
         top_subjects = sections['ssl_subjects'].most_common(1)
         console.print("  🔐 SSL Subject: " + ', '.join(f"{k} ({v})" for k, v in top_subjects))
