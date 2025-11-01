@@ -26,22 +26,44 @@ args = parser.parse_args()
 log_types = ['conn', 'dns', 'http', 'ssl', 'smb_mapping']  # Added smb_mapping
 log_files = defaultdict(list)
 for log_type in log_types:
-    patterns = [f"{log_type}.log", f"{log_type}.*.log", f"{log_type}.*.log.gz"]
+    patterns = [
+        f"{log_type}.log",
+        f"{log_type}.log.gz",
+        f"{log_type}.*.log",
+        f"{log_type}.*.log.gz",
+    ]
+    found = set()
     for pattern in patterns:
-        log_files[log_type] += glob.glob(os.path.join(args.directory, pattern))
+        found.update(glob.glob(os.path.join(args.directory, pattern)))
+    log_files[log_type] = sorted(found)
 
 # Read files with TSV header support
 def read_lines(filepath):
     open_func = gzip.open if filepath.endswith('.gz') else open
     mode = 'rt' if filepath.endswith('.gz') else 'r'
     fields = []
+    is_json = None
     try:
         with open_func(filepath, mode, errors='replace') as f:
-            for line in f:
-                if line.startswith('#fields'):
-                    fields = line.strip().split('\t')[1:]
-                elif not line.startswith('#') and fields:
-                    parts = line.strip().split('\t')
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                if line.startswith('#'):
+                    if line.startswith('#fields'):
+                        fields = line.split('\t')[1:]
+                    continue
+                if is_json is None:
+                    is_json = line.startswith('{')
+                if is_json:
+                    try:
+                        yield json.loads(raw_line)
+                    except json.JSONDecodeError:
+                        continue
+                else:
+                    if not fields:
+                        continue
+                    parts = raw_line.rstrip('\n').split('\t')
                     if len(parts) != len(fields):
                         continue
                     yield dict(zip(fields, parts))
@@ -389,4 +411,3 @@ for ip, sections in sorted(ip_profiles.items()):
             legacy_ports_dst = sections['dst_ports_as_dst'].most_common(5)
             if legacy_ports_dst:
                 console.print("  🛡️ Dst Ports (as destination, top 5): " + ', '.join(f"{k} ({v})" for k, v in legacy_ports_dst))
-
