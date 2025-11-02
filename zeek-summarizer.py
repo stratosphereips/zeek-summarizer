@@ -919,8 +919,21 @@ a { color: var(--accent); }
   display: inline-flex;
   gap: 6px;
   align-items: center;
+  max-width: 100%;
+  flex-wrap: wrap;
+  white-space: normal;
 }
-.tag strong { color: #fbbf24; }
+.tag-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.tag-count {
+  color: #fbbf24;
+  font-weight: 600;
+  flex: 0 0 auto;
+}
 .badge-pill {
   padding: 4px 8px;
   border-radius: 999px;
@@ -1217,7 +1230,10 @@ function renderTags(items) {
   if (!items || !items.length) {
     return '<span class="empty">No data</span>';
   }
-  return items.map(item => `<span class="tag">${escapeHtml(item.label)} <strong>${(item.count ?? item.total ?? 0).toLocaleString()}</strong></span>`).join('');
+  return items.map(item => {
+    const value = (item.count ?? item.total ?? 0).toLocaleString();
+    return `<span class="tag"><span class="tag-text">${escapeHtml(item.label)}</span><span class="tag-count">${value}</span></span>`;
+  }).join('');
 }
 
 function createHostCard(host) {
