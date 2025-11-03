@@ -15,7 +15,7 @@ from tabulate import tabulate
 
 console = Console()
 
-LOG_TYPES = ['conn', 'dns', 'http', 'ssl', 'smb_mapping']
+LOG_TYPES = ['conn', 'dns', 'http', 'ssl', 'smb_mapping', 'smtp']
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -156,6 +156,23 @@ def aggregate_logs(directory: str) -> Dict[str, object]:
     smb_share_counter = Counter()
     smb_native_fs_counter = Counter()
     smb_share_type_counter = Counter()
+    smtp_sender_counter = Counter()
+    smtp_recipient_counter = Counter()
+    smtp_subject_counter = Counter()
+    smtp_error_counter = Counter()
+    smtp_tls_true = 0
+    smtp_tls_false = 0
+    smtp_tls_unknown = 0
+    smtp_profiles = defaultdict(lambda: {
+        'mailfrom': Counter(),
+        'rcptto': Counter(),
+        'subject': Counter(),
+        'helo': Counter(),
+        'status': Counter(),
+        'trans_depth': Counter(),
+        'msg_id': Counter(),
+        'tls': Counter(),
+    })
     non_conn_ips = set()
     ip_profiles: Dict[str, Dict[str, Counter]] = defaultdict(lambda: defaultdict(Counter))
 
@@ -197,9 +214,13 @@ def aggregate_logs(directory: str) -> Dict[str, object]:
             if src_str:
                 all_src_ips.add(src_str)
                 non_conn_ips.add(src_str)
+                ip_profiles[src_str]['flows']['smtp_client'] += 1
+                ip_profiles[src_str]['flows']['smtp_client'] += 1
             if dst_str:
                 all_dst_ips.add(dst_str)
                 non_conn_ips.add(dst_str)
+                ip_profiles[dst_str]['flows']['smtp_server'] += 1
+                ip_profiles[dst_str]['flows']['smtp_server'] += 1
             if qname_str:
                 dns_query_counter[qname_str] += 1
                 if src_str:
@@ -312,6 +333,92 @@ def aggregate_logs(directory: str) -> Dict[str, object]:
                 smb_share_type_counter[share_type_str] += 1
 
     port_summary = defaultdict(lambda: {'as_dst': 0, 'as_target': 0})
+    for filepath in log_files['smtp']:
+        for entry in read_lines(filepath):
+            src = entry.get('id.orig_h')
+            dst = entry.get('id.resp_h')
+            mailfrom = entry.get('mailfrom')
+            rcptto = entry.get('rcptto')
+            subject = entry.get('subject')
+            tls_flag = entry.get('tls')
+            reply = entry.get('last_reply') or entry.get('reply') or entry.get('status')
+            uid = entry.get('uid')
+            helo = entry.get('helo')
+            trans_depth = entry.get('trans_depth')
+            msg_id = entry.get('msg_id')
+
+            src_str = str(src) if src else None
+            dst_str = str(dst) if dst else None
+            mailfrom_str = str(mailfrom) if mailfrom not in (None, '-') else None
+            subject_str = str(subject) if subject not in (None, '-') else None
+
+            recipients: list[str] = []
+            if isinstance(rcptto, list):
+                recipients = [str(r) for r in rcptto if r not in (None, '-', '')]
+            elif isinstance(rcptto, str) and rcptto and rcptto != '-':
+                recipients = [r.strip() for r in rcptto.split(',') if r.strip()]
+
+            if src_str:
+                all_src_ips.add(src_str)
+                non_conn_ips.add(src_str)
+                ip_profiles[src_str]['flows']['smtp_client'] += 1
+            if dst_str:
+                all_dst_ips.add(dst_str)
+                non_conn_ips.add(dst_str)
+                ip_profiles[dst_str]['flows']['smtp_server'] += 1
+
+            if mailfrom_str:
+                smtp_sender_counter[mailfrom_str] += 1
+            for recipient in recipients:
+                smtp_recipient_counter[recipient] += 1
+            if subject_str:
+                smtp_subject_counter[subject_str] += 1
+
+            tls_value = None
+            if isinstance(tls_flag, bool):
+                tls_value = tls_flag
+            elif isinstance(tls_flag, str):
+                if tls_flag.lower() in ('t', 'true', '1', 'yes'):
+                    tls_value = True
+                elif tls_flag.lower() in ('f', 'false', '0', 'no'):
+                    tls_value = False
+
+            if tls_value is True:
+                smtp_tls_true += 1
+            elif tls_value is False:
+                smtp_tls_false += 1
+            else:
+                smtp_tls_unknown += 1
+
+            if reply and isinstance(reply, str):
+                code = reply.strip().split(' ')[0]
+                if code and code.isdigit() and not code.startswith('2'):
+                    smtp_error_counter[code] += 1
+
+            if src_str:
+                profile = smtp_profiles[src_str]
+                if mailfrom_str:
+                    profile['mailfrom'][mailfrom_str] += 1
+                for recipient in recipients:
+                    profile['rcptto'][recipient] += 1
+                if subject_str:
+                    profile['subject'][subject_str] += 1
+                if helo not in (None, '-'):
+                    profile['helo'][str(helo)] += 1
+                if tls_value is True:
+                    profile['tls']['true'] += 1
+                elif tls_value is False:
+                    profile['tls']['false'] += 1
+                else:
+                    profile['tls']['unknown'] += 1
+                if reply and isinstance(reply, str):
+                    profile['status'][reply] += 1
+                if trans_depth not in (None, '-'):
+                    profile['trans_depth'][str(trans_depth)] += 1
+                if msg_id not in (None, '-'):
+                    profile['msg_id'][str(msg_id)] += 1
+
+    port_summary = defaultdict(lambda: {'as_dst': 0, 'as_target': 0})
     for sections in ip_profiles.values():
         for port, count in sections.get('dst_ports_as_src', Counter()).items():
             port_summary[port]['as_dst'] += int(count)
@@ -333,6 +440,14 @@ def aggregate_logs(directory: str) -> Dict[str, object]:
         'smb_share_counter': smb_share_counter,
         'smb_native_fs_counter': smb_native_fs_counter,
         'smb_share_type_counter': smb_share_type_counter,
+        'smtp_sender_counter': smtp_sender_counter,
+        'smtp_recipient_counter': smtp_recipient_counter,
+        'smtp_subject_counter': smtp_subject_counter,
+        'smtp_tls_true': smtp_tls_true,
+        'smtp_tls_false': smtp_tls_false,
+        'smtp_tls_unknown': smtp_tls_unknown,
+        'smtp_profiles_raw': smtp_profiles,
+        'smtp_error_counter': smtp_error_counter,
         'non_conn_ips': non_conn_ips,
         'ip_profiles': ip_profiles,
         'port_summary': {k: dict(v) for k, v in port_summary.items()},
@@ -418,6 +533,15 @@ def render_text_report(result: Dict[str, object], args: argparse.Namespace) -> N
     top_smb_shares = filter_local_counter(result['smb_share_counter'], args.local_only).most_common(3)
     top_smb_fs = filter_local_counter(result['smb_native_fs_counter'], args.local_only).most_common(2)
     top_smb_types = filter_local_counter(result['smb_share_type_counter'], args.local_only).most_common(2)
+    top_smtp_senders = result['smtp_sender_counter'].most_common(3)
+    top_smtp_recipients = result['smtp_recipient_counter'].most_common(3)
+    top_smtp_subjects = result['smtp_subject_counter'].most_common(2)
+    smtp_tls_summary = [
+        f"Enabled:{result['smtp_tls_true']}",
+        f"Disabled:{result['smtp_tls_false']}",
+        f"Unknown:{result['smtp_tls_unknown']}",
+    ]
+    top_smtp_errors = result['smtp_error_counter'].most_common(2)
 
     global_table = [
         ["Unique Src IPs", len(local_src_ips)],
@@ -432,6 +556,11 @@ def render_text_report(result: Dict[str, object], args: argparse.Namespace) -> N
         ["Top SMB Shares", ', '.join(f"{k} ({v})" for k, v in top_smb_shares)],
         ["Top SMB Native FS", ', '.join(f"{k} ({v})" for k, v in top_smb_fs)],
         ["Top SMB Share Types", ', '.join(f"{k} ({v})" for k, v in top_smb_types)],
+        ["Top SMTP Senders", ', '.join(f"{k} ({v})" for k, v in top_smtp_senders)],
+        ["Top SMTP Recipients", ', '.join(f"{k} ({v})" for k, v in top_smtp_recipients)],
+        ["Top SMTP Subjects", ', '.join(f"{k} ({v})" for k, v in top_smtp_subjects)],
+        ["SMTP TLS Usage", ', '.join(smtp_tls_summary)],
+        ["SMTP Error Codes", ', '.join(f"{k} ({v})" for k, v in top_smtp_errors)],
     ]
     console.print(tabulate(global_table, headers=["Category", "Summary"], tablefmt="fancy_grid"))
 
@@ -491,6 +620,23 @@ def render_text_report(result: Dict[str, object], args: argparse.Namespace) -> N
         if smb_share_types:
             top_smb_types = smb_share_types.most_common(2)
             console.print("  🏷️  SMB Share Types: " + ', '.join(f"{k} ({v})" for k, v in top_smb_types))
+        smtp_profile = result.get('smtp_profiles_raw', {}).get(ip)
+        if smtp_profile:
+            mailfrom_top = smtp_profile['mailfrom'].most_common(2) if 'mailfrom' in smtp_profile else []
+            if mailfrom_top:
+                console.print("  ✉️ SMTP Mail From: " + ', '.join(f"{k} ({v})" for k, v in mailfrom_top))
+            rcpt_top = smtp_profile['rcptto'].most_common(3) if 'rcptto' in smtp_profile else []
+            if rcpt_top:
+                console.print("  📬 SMTP Rcpt To: " + ', '.join(f"{k} ({v})" for k, v in rcpt_top))
+            subject_top = smtp_profile['subject'].most_common(2) if 'subject' in smtp_profile else []
+            if subject_top:
+                console.print("  📨 SMTP Subjects: " + ', '.join(f"{k} ({v})" for k, v in subject_top))
+            statuses = smtp_profile['status'].most_common(2) if 'status' in smtp_profile else []
+            if statuses:
+                console.print("  📮 SMTP Statuses: " + ', '.join(f"{k} ({v})" for k, v in statuses))
+            tls_counts = smtp_profile.get('tls', Counter())
+            if tls_counts:
+                console.print(f"  🔐 SMTP TLS: Enabled ({tls_counts.get('true', 0)}), Disabled ({tls_counts.get('false', 0)}), Unknown ({tls_counts.get('unknown', 0)})")
         dst_ports_src = sections.get('dst_ports_as_src', Counter())
         if dst_ports_src:
             top_ports_src = dst_ports_src.most_common(10)
@@ -554,6 +700,15 @@ def build_export_data(result: Dict[str, object], args: argparse.Namespace, top_l
         "top_smb_shares": counter_to_list(filter_local_counter(result['smb_share_counter'], args.local_only), top_limit),
         "top_smb_native_fs": counter_to_list(filter_local_counter(result['smb_native_fs_counter'], args.local_only), top_limit),
         "top_smb_share_types": counter_to_list(filter_local_counter(result['smb_share_type_counter'], args.local_only), top_limit),
+        "top_smtp_senders": counter_to_list(result['smtp_sender_counter'], top_limit),
+        "top_smtp_recipients": counter_to_list(result['smtp_recipient_counter'], top_limit),
+        "top_smtp_subjects": counter_to_list(result['smtp_subject_counter'], top_limit),
+        "smtp_tls": [
+            {"label": "TLS Enabled", "count": result['smtp_tls_true']},
+            {"label": "TLS Disabled", "count": result['smtp_tls_false']},
+            {"label": "Unknown", "count": result['smtp_tls_unknown']}
+        ],
+        "smtp_errors": counter_to_list(result['smtp_error_counter'], top_limit),
     }
     global_section["unique_smb_src_ips"] = len(filter_local_set(result['smb_src_ips'], args.local_only))
     global_section["unique_smb_dst_ips"] = len(filter_local_set(result['smb_dst_ips'], args.local_only))
@@ -609,6 +764,35 @@ def build_export_data(result: Dict[str, object], args: argparse.Namespace, top_l
             "dst_ports_as_src": counter_to_list(sections.get('dst_ports_as_src', Counter()), top_limit),
             "dst_ports_as_dst": counter_to_list(sections.get('dst_ports_as_dst', Counter()), top_limit),
         }
+        smtp_profile = result.get('smtp_profiles_raw', {}).get(ip)
+        if smtp_profile:
+            smtp_tls_counter = smtp_profile.get('tls', Counter())
+            tls_items = [
+                {"label": "TLS Enabled", "count": smtp_tls_counter.get('true', 0)},
+                {"label": "TLS Disabled", "count": smtp_tls_counter.get('false', 0)},
+                {"label": "Unknown", "count": smtp_tls_counter.get('unknown', 0)},
+            ]
+            host_entry["smtp_activity"] = {
+                "mailfrom": counter_to_list(smtp_profile.get('mailfrom', Counter()), top_limit),
+                "rcptto": counter_to_list(smtp_profile.get('rcptto', Counter()), top_limit),
+                "subject": counter_to_list(smtp_profile.get('subject', Counter()), top_limit),
+                "helo": counter_to_list(smtp_profile.get('helo', Counter()), top_limit),
+                "status": counter_to_list(smtp_profile.get('status', Counter()), top_limit),
+                "trans_depth": counter_to_list(smtp_profile.get('trans_depth', Counter()), top_limit),
+                "msg_id": counter_to_list(smtp_profile.get('msg_id', Counter()), top_limit),
+                "tls": [item for item in tls_items if item["count"]],
+            }
+        else:
+            host_entry["smtp_activity"] = {
+                "mailfrom": [],
+                "rcptto": [],
+                "subject": [],
+                "helo": [],
+                "status": [],
+                "trans_depth": [],
+                "msg_id": [],
+                "tls": [],
+            }
         hosts.append(host_entry)
     hosts.sort(key=lambda item: item['total_flows'], reverse=True)
 
@@ -631,6 +815,12 @@ def build_export_data(result: Dict[str, object], args: argparse.Namespace, top_l
             "http": counter_to_list(filter_local_counter(result['http_host_counter'], args.local_only), 10),
             "ports": top_ports,
             "port_bins": compute_port_bins(result['port_summary']),
+            "smtp_tls": [
+                {"label": "TLS Enabled", "count": result['smtp_tls_true']},
+                {"label": "TLS Disabled", "count": result['smtp_tls_false']},
+                {"label": "Unknown", "count": result['smtp_tls_unknown']}
+            ],
+            "smtp_errors": counter_to_list(result['smtp_error_counter'], 10),
         },
         "meta": {
             "directory": os.path.abspath(args.directory),
@@ -1015,6 +1205,16 @@ footer {
       <canvas id="portChart"></canvas>
       <div class="chart-placeholder" data-placeholder="portChart" hidden>No port activity recorded.</div>
     </div>
+    <div class="chart-card">
+      <h2>✉️ SMTP TLS</h2>
+      <canvas id="smtpTlsChart"></canvas>
+      <div class="chart-placeholder" data-placeholder="smtpTlsChart" hidden>No SMTP TLS data.</div>
+    </div>
+    <div class="chart-card">
+      <h2>🚨 SMTP Errors</h2>
+      <canvas id="smtpErrorsChart"></canvas>
+      <div class="chart-placeholder" data-placeholder="smtpErrorsChart" hidden>No SMTP errors observed.</div>
+    </div>
   </section>
 
   <section class="host-controls">
@@ -1083,21 +1283,28 @@ document.getElementById('directoryPath').textContent = DASHBOARD_DATA.meta.direc
 document.getElementById('generatedAt').textContent = DASHBOARD_DATA.generated_at;
 
 function useChart(canvasId, type, items, options = {}) {
+  const { datasetLabel, ...chartOptions } = options || {};
   const canvas = document.getElementById(canvasId);
   const placeholder = document.querySelector(`.chart-placeholder[data-placeholder="${canvasId}"]`);
-  if (!canvas || !items || !items.length) {
-    if (canvas) {
-      canvas.hidden = true;
-    }
+  if (!canvas) {
     if (placeholder) {
       placeholder.hidden = false;
+      placeholder.style.display = 'flex';
     }
     return null;
   }
+  const hasData = Array.isArray(items) && items.length > 0;
   if (placeholder) {
-    placeholder.hidden = true;
+    placeholder.hidden = !hasData;
+    placeholder.style.display = hasData ? 'none' : 'flex';
+  }
+  if (!hasData) {
+    canvas.hidden = true;
+    canvas.style.display = 'none';
+    return null;
   }
   canvas.hidden = false;
+  canvas.style.display = 'block';
   canvas.height = 210;
   const ctx = canvas.getContext('2d');
   const baseOptions = {
@@ -1142,12 +1349,13 @@ function useChart(canvasId, type, items, options = {}) {
       }
     };
   }
-  const finalOptions = Object.assign({}, baseOptions, options);
+  const finalOptions = Object.assign({}, baseOptions, chartOptions);
   return new Chart(ctx, {
     type,
     data: {
       labels: items.map(item => item.label),
       datasets: [{
+        label: datasetLabel || 'Count',
         data: items.map(item => (item.count ?? item.total ?? 0)),
         backgroundColor: items.map((_, idx) => palette[idx % palette.length]),
         borderWidth: 1,
@@ -1162,6 +1370,8 @@ function useChart(canvasId, type, items, options = {}) {
 useChart('protocolChart', 'doughnut', (DASHBOARD_DATA.charts.protocols || []).slice(0, 8));
 useChart('dnsChart', 'bar', (DASHBOARD_DATA.charts.dns || []).slice(0, 8), { indexAxis: 'y' });
 useChart('portChart', 'bar', (DASHBOARD_DATA.charts.ports || []).slice(0, 10), { indexAxis: 'y' });
+useChart('smtpTlsChart', 'doughnut', (DASHBOARD_DATA.charts.smtp_tls || []).filter(item => (item?.count || 0) > 0));
+useChart('smtpErrorsChart', 'bar', (DASHBOARD_DATA.charts.smtp_errors || []).slice(0, 8), { indexAxis: 'y' });
 
 const hostContainer = document.getElementById('hostContainer');
 const hostSearch = document.getElementById('hostSearch');
@@ -1208,6 +1418,10 @@ const topDnsGlobal = (DASHBOARD_DATA.global.top_dns_queries || [])[0];
 if (topDnsGlobal) placeholderCandidates.push(topDnsGlobal.label);
 const topHttpGlobal = (DASHBOARD_DATA.global.top_http_hosts || [])[0];
 if (topHttpGlobal) placeholderCandidates.push(topHttpGlobal.label);
+const topSmtpSender = (DASHBOARD_DATA.global.top_smtp_senders || [])[0];
+if (topSmtpSender) placeholderCandidates.push(topSmtpSender.label);
+const topSmtpRecipient = (DASHBOARD_DATA.global.top_smtp_recipients || [])[0];
+if (topSmtpRecipient) placeholderCandidates.push(topSmtpRecipient.label);
 const topPortChart = (DASHBOARD_DATA.charts.ports || [])[0];
 if (topPortChart) placeholderCandidates.push(topPortChart.label);
 const placeholderUnique = Array.from(new Set(placeholderCandidates.filter(Boolean)));
@@ -1254,6 +1468,11 @@ function createHostCard(host) {
   (host.http_uris || []).forEach(item => searchBits.add(item.label));
   (host.dst_ports_as_src || []).forEach(item => searchBits.add(item.label));
   (host.dst_ports_as_dst || []).forEach(item => searchBits.add(item.label));
+  const smtpActivity = host.smtp_activity || {};
+  ['mailfrom','rcptto','subject','helo','status','msg_id','trans_depth'].forEach(key => {
+    (smtpActivity[key] || []).forEach(item => searchBits.add(item.label));
+  });
+  (smtpActivity.tls || []).forEach(item => searchBits.add(item.label));
   card.dataset.search = Array.from(searchBits).join(' ').toLowerCase();
 
   const badges = [];
@@ -1308,6 +1527,26 @@ function createHostCard(host) {
     <div class="section">
       <h4>🛡️ Ports Targeted (as destination)</h4>
       <div class="tag-list">${renderTags(host.dst_ports_as_dst)}</div>
+    </div>
+    <div class="section">
+      <h4>✉️ SMTP Mail From</h4>
+      <div class="tag-list">${renderTags((host.smtp_activity || {}).mailfrom)}</div>
+    </div>
+    <div class="section">
+      <h4>📬 SMTP Recipients</h4>
+      <div class="tag-list">${renderTags((host.smtp_activity || {}).rcptto)}</div>
+    </div>
+    <div class="section">
+      <h4>📨 SMTP Subjects</h4>
+      <div class="tag-list">${renderTags((host.smtp_activity || {}).subject)}</div>
+    </div>
+    <div class="section">
+      <h4>📮 SMTP Status</h4>
+      <div class="tag-list">${renderTags((host.smtp_activity || {}).status)}</div>
+    </div>
+    <div class="section">
+      <h4>🔐 SMTP TLS</h4>
+      <div class="tag-list">${renderTags((host.smtp_activity || {}).tls)}</div>
     </div>
   `;
   return card;
