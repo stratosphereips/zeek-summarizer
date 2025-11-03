@@ -7,7 +7,12 @@
 - Optional per-port view to see which services are most active or targeted.
 - Export to JSON or a self-contained HTML dashboard with interactive charts, search, and filters.
 
-The screenshot above shows the dashboard cards that highlight the busiest DNS queries and HTTP hosts in a capture.
+## Web Dashboard
+<img width="1366" height="697" alt="image" src="https://github.com/user-attachments/assets/df3537b6-e180-49cf-9716-eb149da4c816" />
+
+## Text output
+<img width="1105" height="475" alt="image" src="https://github.com/user-attachments/assets/ac36cd3b-b174-44d2-ba6b-422d9bf2d65c" />
+
 
 ---
 
