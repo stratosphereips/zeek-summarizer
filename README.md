@@ -1,77 +1,124 @@
 # Zeek Summarizer
 
-**Zeek Summarizer** is a command-line tool to analyze and summarize Zeek log files. It supports connection logs, DNS, HTTP, and SSL/TLS logs and provides global statistics as well as detailed per-IP or per-port summaries.
+`zeek-summarizer` digests a full Zeek log directory (plain TSV or JSON, compressed or not) and produces:
 
-## 🔧 Installation
+- Global statistics for connections, DNS, HTTP, TLS/SSL, SMB, and SMTP activity.
+- Rich per-host drill downs (protocol mix, ports, DNS/HTTP targets, TLS issuers, SMB shares, SMTP senders/recipients, etc.).
+- Optional per-port view to see which services are most active or targeted.
+- Export to JSON or a self-contained HTML dashboard with interactive charts, search, and filters.
+
+The screenshot above shows the dashboard cards that highlight the busiest DNS queries and HTTP hosts in a capture.
+
+---
+
+## 1. Requirements
+
+- Python 3.10+ (tested with 3.11/3.12/3.13)
+- Zeek logs on disk (e.g. `conn.log`, `dns.log`, `http.log`, `ssl.log`, `smtp.log`)
+- Packages listed in `requirements.txt`
+
+---
+
+## 2. Installation
 
 ```bash
-git clone https://github.com/stratosphereips/zeek-summarizing.git
+# Clone the repository
+git clone https://github.com/stratosphereips/zeek-summarizer.git
 cd zeek-summarizer
+
+# Create and activate a virtual environment
 python3 -m venv venv
 source venv/bin/activate
+
+# Install dependencies
+pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-## 📦 Requirements
+To leave the environment later, run `deactivate`.
 
-See `requirements.txt`.
+---
 
-## 🚀 Usage
-
-```bash
-python zeek-summarizer.py -d <zeek_log_directory> [options]
-```
-
-### Options:
-
-- `-d, --directory` (**required**): Path to the directory containing Zeek logs.
-- `-r, --require-activity`: Show only IPs that appear in non-conn logs.
-- `-o, --only-conn`: Show only IPs that appear only in conn logs.
-- `-p, --per-port`: Show summary per port instead of per IP.
-- `--debug`: Show debug information for internal operations.
-
-## Screenshots
-
-![image](https://github.com/user-attachments/assets/b2564745-bb3e-4780-9064-f9606f8c532a)
-
-![image](https://github.com/user-attachments/assets/400b673f-6e95-4c61-994b-6a56f1d30619)
-
-
-## 📊 Examples
-
-### Basic usage
+## 3. Quick Start (text summary)
 
 ```bash
-python zeek-summarizer.py -d ./logs
+./zeek-summarizer.sh -d /path/to/zeek/logs
+# or python venv/bin/python zeek-summarizer.py -d /path/to/zeek/logs
 ```
 
-### Only show IPs that have non-connection activity:
+Useful CLI flags:
+
+| Flag | Description |
+| --- | --- |
+| `-d DIR` | Directory containing Zeek logs (supports rotated `*.log*` and `*.log.gz`). |
+| `-r`, `--require-activity` | Only list hosts that appear in non-`conn` logs. |
+| `-o`, `--only-conn` | Only list hosts that have `conn` activity and nothing else. |
+| `-p`, `--per-port` | Switch to per-port aggregated view. |
+| `--local-only` | Keep statistics for private/local IPs only (v4/v6). |
+| `--output-format {text,json,html}` | Choose output renderer (default `text`). |
+| `--output-file PATH` | Write JSON/HTML to file instead of STDOUT (ignored for `text`). |
+
+The helper script `zeek-summarizer.sh` simply activates the bundled `venv/` and forwards every argument to the Python entry point (`"$@"`).
+
+---
+
+## 4. Generate the interactive dashboard
 
 ```bash
-python zeek-summarizer.py -d ./logs -r
+./zeek-summarizer.sh -d /path/to/zeek/logs \
+  --output-format html \
+  --output-file zeek-dashboard.html
+
+# Open the report locally (macOS example)
+open zeek-dashboard.html
 ```
 
-### Show per-port summary:
+The HTML uses embedded data: no web server or backend required. Charts cover protocol mix, top DNS/HTTP targets, port targeting, SMTP TLS usage, and SMTP error codes. The search bar and filters let you jump straight to local hosts, specific /24 or /64 networks, or hosts that triggered non-connection logs.
+
+---
+
+## 5. Export machine-readable JSON
 
 ```bash
-python zeek-summarizer.py -d ./logs -p
+./zeek-summarizer.sh -d /path/to/zeek/logs \
+  --output-format json \
+  --output-file zeek-summary.json
 ```
 
-### Show only connection logs and debug info:
+Each host entry includes counters for protocols, flows, DNS queries, HTTP hosts, TLS issuers/subjects, SMB shares, SMTP metadata, and port usage. The `global` section mirrors the top cards in the dashboard.
+
+---
+
+## 6. Example workflows
 
 ```bash
-python zeek-summarizer.py -d ./logs -o --debug
+# Baseline summary (text)
+./zeek-summarizer.sh -d ./sample-logs
+
+# Focus on local assets that touched non-connection logs
+./zeek-summarizer.sh -d ./sample-logs -r --local-only
+
+# Investigate service exposure (per-port view)
+./zeek-summarizer.sh -d ./sample-logs -p
+
+# Produce HTML and JSON in one go
+./zeek-summarizer.sh -d ./sample-logs --output-format html --output-file report.html
+./zeek-summarizer.sh -d ./sample-logs --output-format json --output-file report.json
 ```
 
-## 📁 Supported Logs
+---
+
+## 7. Supported log families
 
 - `conn.log`
 - `dns.log`
 - `http.log`
 - `ssl.log`
+- `smb_mapping.log`
+- `smtp.log`
 
-Logs may be compressed with `.gz` and can use rotated filenames like `conn.01:00:00-02:00:00.log.gz`.
+The parser accepts TSV (default Zeek format) and JSON, with optional `.gz` compression and rotated filenames such as `dns.2024-10-05-00-00-00.log.gz`.
 
 ---
 
-Created with ❤️ for Zeek network traffic analysis.
+Made with ❤️ for network defenders who want fast situational awareness from Zeek captures.
