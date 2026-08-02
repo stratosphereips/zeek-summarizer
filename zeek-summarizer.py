@@ -214,13 +214,9 @@ def aggregate_logs(directory: str) -> Dict[str, object]:
             if src_str:
                 all_src_ips.add(src_str)
                 non_conn_ips.add(src_str)
-                ip_profiles[src_str]['flows']['smtp_client'] += 1
-                ip_profiles[src_str]['flows']['smtp_client'] += 1
             if dst_str:
                 all_dst_ips.add(dst_str)
                 non_conn_ips.add(dst_str)
-                ip_profiles[dst_str]['flows']['smtp_server'] += 1
-                ip_profiles[dst_str]['flows']['smtp_server'] += 1
             if qname_str:
                 dns_query_counter[qname_str] += 1
                 if src_str:
