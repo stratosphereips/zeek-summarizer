@@ -4,6 +4,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 
 rich_module = types.ModuleType("rich")
@@ -48,6 +49,19 @@ class AggregateLogsTest(unittest.TestCase):
             self.assertEqual(server_flows["dns_server"], 1)
             self.assertEqual(client_flows["smtp_client"], 0)
             self.assertEqual(server_flows["smtp_server"], 0)
+
+            rows = zeek_summarizer.build_global_summary_rows(
+                result,
+                SimpleNamespace(local_only=False),
+            )
+            labels = {row[0] for row in rows}
+
+            self.assertIn("Top DNS Queries", labels)
+            self.assertNotIn("Top SSL Issuers", labels)
+            self.assertNotIn("Unique SMB Src IPs", labels)
+            self.assertNotIn("Unique SMB Dst IPs", labels)
+            self.assertNotIn("Top SMTP Senders", labels)
+            self.assertNotIn("SMTP TLS Usage", labels)
 
 
 if __name__ == "__main__":
