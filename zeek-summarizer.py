@@ -518,8 +518,7 @@ def render_port_summary(result: Dict[str, object]) -> None:
     console.print(tabulate(table_data, headers=["Port", "Used as Destination", "Targeted by Others"], tablefmt="fancy_grid"))
 
 
-def render_text_report(result: Dict[str, object], args: argparse.Namespace) -> None:
-    console.print("\n[bold cyan]🌍 Global Summary[/bold cyan]")
+def build_global_summary_rows(result: Dict[str, object], args: argparse.Namespace) -> List[List[object]]:
     local_src_ips = filter_local_set(result['all_src_ips'], args.local_only)
     local_dst_ips = filter_local_set(result['all_dst_ips'], args.local_only)
     top_protocols = result['proto_counter'].most_common(3)
@@ -532,32 +531,74 @@ def render_text_report(result: Dict[str, object], args: argparse.Namespace) -> N
     top_smtp_senders = result['smtp_sender_counter'].most_common(3)
     top_smtp_recipients = result['smtp_recipient_counter'].most_common(3)
     top_smtp_subjects = result['smtp_subject_counter'].most_common(2)
-    smtp_tls_summary = [
-        f"Enabled:{result['smtp_tls_true']}",
-        f"Disabled:{result['smtp_tls_false']}",
-        f"Unknown:{result['smtp_tls_unknown']}",
-    ]
     top_smtp_errors = result['smtp_error_counter'].most_common(2)
+    smb_src_count = len(filter_local_set(result['smb_src_ips'], args.local_only))
+    smb_dst_count = len(filter_local_set(result['smb_dst_ips'], args.local_only))
+    smtp_tls_total = (
+        result['smtp_tls_true']
+        + result['smtp_tls_false']
+        + result['smtp_tls_unknown']
+    )
 
     global_table = [
         ["Unique Src IPs", len(local_src_ips)],
         ["Unique Dst IPs", len(local_dst_ips)],
         ["Total Protocols Seen", len(result['proto_counter'])],
-        ["Top Protocols", ', '.join(f"{k}:{v}" for k, v in top_protocols)],
-        ["Top DNS Queries", ', '.join(f"{k} ({v})" for k, v in top_dns)],
-        ["Top HTTP Hosts", ', '.join(f"{k} ({v})" for k, v in top_http_hosts)],
-        ["Top SSL Issuers", ', '.join(f"{k} ({v})" for k, v in top_ssl_issuers)],
-        ["Unique SMB Src IPs", len(filter_local_set(result['smb_src_ips'], args.local_only))],
-        ["Unique SMB Dst IPs", len(filter_local_set(result['smb_dst_ips'], args.local_only))],
-        ["Top SMB Shares", ', '.join(f"{k} ({v})" for k, v in top_smb_shares)],
-        ["Top SMB Native FS", ', '.join(f"{k} ({v})" for k, v in top_smb_fs)],
-        ["Top SMB Share Types", ', '.join(f"{k} ({v})" for k, v in top_smb_types)],
-        ["Top SMTP Senders", ', '.join(f"{k} ({v})" for k, v in top_smtp_senders)],
-        ["Top SMTP Recipients", ', '.join(f"{k} ({v})" for k, v in top_smtp_recipients)],
-        ["Top SMTP Subjects", ', '.join(f"{k} ({v})" for k, v in top_smtp_subjects)],
-        ["SMTP TLS Usage", ', '.join(smtp_tls_summary)],
-        ["SMTP Error Codes", ', '.join(f"{k} ({v})" for k, v in top_smtp_errors)],
     ]
+
+    optional_rows = [
+        ("Top Protocols", top_protocols, ', '.join(f"{k}:{v}" for k, v in top_protocols)),
+        ("Top DNS Queries", top_dns, ', '.join(f"{k} ({v})" for k, v in top_dns)),
+        ("Top HTTP Hosts", top_http_hosts, ', '.join(f"{k} ({v})" for k, v in top_http_hosts)),
+        ("Top SSL Issuers", top_ssl_issuers, ', '.join(f"{k} ({v})" for k, v in top_ssl_issuers)),
+    ]
+    global_table.extend([label, value] for label, data, value in optional_rows if data)
+
+    if smb_src_count:
+        global_table.append(["Unique SMB Src IPs", smb_src_count])
+    if smb_dst_count:
+        global_table.append(["Unique SMB Dst IPs", smb_dst_count])
+
+    smb_rows = [
+        ("Top SMB Shares", top_smb_shares),
+        ("Top SMB Native FS", top_smb_fs),
+        ("Top SMB Share Types", top_smb_types),
+    ]
+    global_table.extend(
+        [label, ', '.join(f"{k} ({v})" for k, v in data)]
+        for label, data in smb_rows if data
+    )
+
+    smtp_rows = [
+        ("Top SMTP Senders", top_smtp_senders),
+        ("Top SMTP Recipients", top_smtp_recipients),
+        ("Top SMTP Subjects", top_smtp_subjects),
+    ]
+    global_table.extend(
+        [label, ', '.join(f"{k} ({v})" for k, v in data)]
+        for label, data in smtp_rows if data
+    )
+    if smtp_tls_total:
+        global_table.append([
+            "SMTP TLS Usage",
+            ', '.join([
+                f"Enabled:{result['smtp_tls_true']}",
+                f"Disabled:{result['smtp_tls_false']}",
+                f"Unknown:{result['smtp_tls_unknown']}",
+            ]),
+        ])
+    if top_smtp_errors:
+        global_table.append([
+            "SMTP Error Codes",
+            ', '.join(f"{k} ({v})" for k, v in top_smtp_errors),
+        ])
+
+    return global_table
+
+
+def render_text_report(result: Dict[str, object], args: argparse.Namespace) -> None:
+    console.print("\n[bold cyan]🌍 Global Summary[/bold cyan]")
+    global_table = build_global_summary_rows(result, args)
     console.print(tabulate(global_table, headers=["Category", "Summary"], tablefmt="fancy_grid"))
 
     if args.per_port:
