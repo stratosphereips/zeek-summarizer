@@ -3,7 +3,7 @@
 `zeek-summarizer` digests a full Zeek log directory (plain TSV or JSON, compressed or not) and produces:
 
 - Global statistics for connections, DNS, HTTP, TLS/SSL, SMB, and SMTP activity.
-- Rich per-host drill downs (protocol mix, ports, DNS/HTTP targets, TLS issuers, SMB shares, SMTP senders/recipients, etc.).
+- Compact per-host behavioral summaries (connections, sent/received data and packets, activity span, top peers, outcomes, protocols, ports, and application activity).
 - Optional per-port view to see which services are most active or targeted.
 - Export to JSON or a self-contained HTML dashboard with interactive charts, search, and filters.
 
@@ -90,7 +90,7 @@ The HTML uses embedded data: no web server or backend required. Charts cover pro
   --output-file zeek-summary.json
 ```
 
-Each host entry includes counters for protocols, flows, DNS queries, HTTP hosts, TLS issuers/subjects, SMB shares, SMTP metadata, and port usage. The `global` section mirrors the top cards in the dashboard.
+Each host entry includes accurate connection and peer counts, directional byte/packet totals, activity timestamps, top peers by transferred bytes, connection outcomes, protocols, DNS/HTTP targets, TLS issuers/subjects, SMB shares, SMTP metadata, and port usage. The `global` section mirrors the top cards in the dashboard.
 
 ---
 
