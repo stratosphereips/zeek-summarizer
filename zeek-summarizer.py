@@ -141,6 +141,57 @@ def classify_ip(ip: str) -> Dict[str, str]:
     return info
 
 
+def parse_zeek_int(value: object) -> int:
+    if value in (None, '', '-', '(empty)'):
+        return 0
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        try:
+            return max(0, int(float(str(value))))
+        except (TypeError, ValueError):
+            return 0
+
+
+def parse_zeek_float(value: object) -> float | None:
+    if value in (None, '', '-', '(empty)'):
+        return None
+    try:
+        return float(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def record_connection_metrics(
+    profile: Dict[str, object],
+    peer: str | None,
+    sent_bytes: int,
+    received_bytes: int,
+    sent_packets: int,
+    received_packets: int,
+    timestamp: float | None,
+    duration: float | None,
+) -> None:
+    traffic = profile['traffic']
+    traffic['sent_bytes'] += sent_bytes
+    traffic['received_bytes'] += received_bytes
+    traffic['sent_packets'] += sent_packets
+    traffic['received_packets'] += received_packets
+
+    if peer:
+        profile['peer_connections'][peer] += 1
+        profile['peer_sent_bytes'][peer] += sent_bytes
+        profile['peer_received_bytes'][peer] += received_bytes
+
+    if timestamp is not None:
+        bounds = profile['time_bounds']
+        end_time = timestamp + max(0.0, duration or 0.0)
+        if 'first_seen' not in bounds or timestamp < bounds['first_seen']:
+            bounds['first_seen'] = timestamp
+        if 'last_seen' not in bounds or end_time > bounds['last_seen']:
+            bounds['last_seen'] = end_time
+
+
 def aggregate_logs(directory: str) -> Dict[str, object]:
     log_files = detect_log_files(directory)
     all_src_ips = set()
@@ -182,20 +233,48 @@ def aggregate_logs(directory: str) -> Dict[str, object]:
             src = entry.get('id.orig_h')
             dst = entry.get('id.resp_h')
             proto = entry.get('proto') or '-'
+            service = entry.get('service')
+            conn_state = entry.get('conn_state')
             src_str = str(src) if src else None
             dst_str = str(dst) if dst else None
             proto_str = str(proto)
+            service_str = str(service) if service not in (None, '', '-', '(empty)') else None
+            state_str = str(conn_state) if conn_state not in (None, '', '-', '(empty)') else None
+            timestamp = parse_zeek_float(entry.get('ts'))
+            duration = parse_zeek_float(entry.get('duration'))
+            orig_bytes = parse_zeek_int(entry.get('orig_bytes'))
+            resp_bytes = parse_zeek_int(entry.get('resp_bytes'))
+            orig_packets = parse_zeek_int(entry.get('orig_pkts'))
+            resp_packets = parse_zeek_int(entry.get('resp_pkts'))
             if src_str:
                 all_src_ips.add(src_str)
                 proto_counter[proto_str] += 1
                 ip_profiles[src_str]['protocols'][proto_str] += 1
                 ip_profiles[src_str]['flows']['as source'] += 1
+                if service_str:
+                    ip_profiles[src_str]['services'][service_str] += 1
+                if state_str:
+                    ip_profiles[src_str]['connection_states'][state_str] += 1
+                record_connection_metrics(
+                    ip_profiles[src_str], dst_str,
+                    orig_bytes, resp_bytes, orig_packets, resp_packets,
+                    timestamp, duration,
+                )
             if dst_str:
                 all_dst_ips.add(dst_str)
                 ip_profiles[dst_str]['protocols'][proto_str] += 1
                 ip_profiles[dst_str]['flows']['destination'] += 1
+                if service_str:
+                    ip_profiles[dst_str]['services'][service_str] += 1
+                if state_str:
+                    ip_profiles[dst_str]['connection_states'][state_str] += 1
+                record_connection_metrics(
+                    ip_profiles[dst_str], src_str,
+                    resp_bytes, orig_bytes, resp_packets, orig_packets,
+                    timestamp, duration,
+                )
             dport = entry.get('id.resp_p')
-            if dport not in (None, ''):
+            if dport not in (None, '', '-', '0', 0):
                 dport_str = str(dport)
                 if src_str:
                     ip_profiles[src_str]['dst_ports_as_src'][dport_str] += 1
@@ -543,6 +622,7 @@ def build_global_summary_rows(result: Dict[str, object], args: argparse.Namespac
     global_table = [
         ["Unique Src IPs", len(local_src_ips)],
         ["Unique Dst IPs", len(local_dst_ips)],
+        ["Total Connections", sum(result['proto_counter'].values())],
         ["Total Protocols Seen", len(result['proto_counter'])],
     ]
 
@@ -596,6 +676,100 @@ def build_global_summary_rows(result: Dict[str, object], args: argparse.Namespac
     return global_table
 
 
+def format_bytes(value: int) -> str:
+    amount = float(max(0, value))
+    units = ('B', 'KiB', 'MiB', 'GiB', 'TiB')
+    for unit in units:
+        if amount < 1024 or unit == units[-1]:
+            if unit == 'B':
+                return f"{int(amount)} {unit}"
+            precision = 0 if amount >= 100 else 1
+            return f"{amount:.{precision}f} {unit}"
+        amount /= 1024
+    return f"{int(value)} B"
+
+
+def format_duration(seconds: float) -> str:
+    seconds = max(0.0, seconds)
+    if seconds < 1:
+        return f"{seconds:.1f}s"
+    total_seconds = int(seconds)
+    days, remainder = divmod(total_seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
+
+def connection_count(sections: Dict[str, object]) -> int:
+    flows = sections.get('flows', Counter())
+    return int(flows.get('as source', 0) + flows.get('destination', 0))
+
+
+def activity_span_seconds(sections: Dict[str, object]) -> float | None:
+    bounds = sections.get('time_bounds', Counter())
+    first_seen = bounds.get('first_seen')
+    last_seen = bounds.get('last_seen')
+    if first_seen is None or last_seen is None:
+        return None
+    return max(0.0, float(last_seen) - float(first_seen))
+
+
+def connection_outcomes(states: Counter) -> Counter:
+    grouped = Counter()
+    for state, count in states.items():
+        if state == 'SF':
+            label = 'normal'
+        elif state == 'S0':
+            label = 'no reply'
+        elif state in ('REJ', 'RSTOS0'):
+            label = 'rejected'
+        elif state in ('RSTO', 'RSTR', 'RSTRH'):
+            label = 'reset'
+        elif state in ('S1', 'S2', 'S3', 'SH', 'SHR'):
+            label = 'incomplete'
+        else:
+            label = 'other'
+        grouped[label] += count
+    return grouped
+
+
+def peer_summaries(sections: Dict[str, object], limit: int | None = None) -> List[Dict[str, object]]:
+    connections = sections.get('peer_connections', Counter())
+    sent = sections.get('peer_sent_bytes', Counter())
+    received = sections.get('peer_received_bytes', Counter())
+    peers = []
+    for peer, count in connections.items():
+        sent_bytes = int(sent.get(peer, 0))
+        received_bytes = int(received.get(peer, 0))
+        peers.append({
+            'ip': str(peer),
+            'connections': int(count),
+            'sent_bytes': sent_bytes,
+            'received_bytes': received_bytes,
+            'total_bytes': sent_bytes + received_bytes,
+        })
+    peers.sort(
+        key=lambda item: (item['total_bytes'], item['connections'], item['ip']),
+        reverse=True,
+    )
+    return peers[:limit] if limit is not None else peers
+
+
+def format_top_counter(counter: Counter, limit: int = 3) -> str:
+    items = counter.most_common(limit)
+    rendered = ', '.join(f"{key}:{value:,}" for key, value in items)
+    remaining = len(counter) - len(items)
+    if remaining:
+        rendered += f" · +{remaining} more"
+    return rendered
+
+
 def render_text_report(result: Dict[str, object], args: argparse.Namespace) -> None:
     console.print("\n[bold cyan]🌍 Global Summary[/bold cyan]")
     global_table = build_global_summary_rows(result, args)
@@ -612,87 +786,123 @@ def render_text_report(result: Dict[str, object], args: argparse.Namespace) -> N
             continue
         sections = result['ip_profiles'][ip]
         flows_counter = sections.get('flows', Counter())
-        total_flows = sum(flows_counter.values())
-        console.print(f"\n[bold blue]🔹 {ip}[/bold blue] — Total flows: {total_flows}")
+        total_connections = connection_count(sections)
+        peers = peer_summaries(sections)
+        span_seconds = activity_span_seconds(sections)
+        header = f"[bold blue]🔹 {ip}[/bold blue] — Connections: {total_connections:,} · Peers: {len(peers):,}"
+        if span_seconds is not None:
+            header += f" · Span: {format_duration(span_seconds)}"
+        console.print(f"\n{header}")
+
+        traffic = sections.get('traffic', Counter())
+        if total_connections:
+            console.print(
+                "  ↕ Traffic: "
+                f"sent {format_bytes(traffic.get('sent_bytes', 0))} "
+                f"({traffic.get('sent_packets', 0):,} pkts) · "
+                f"received {format_bytes(traffic.get('received_bytes', 0))} "
+                f"({traffic.get('received_packets', 0):,} pkts)"
+            )
+
+        if peers:
+            top_peers = peers[:3]
+            peer_text = ', '.join(
+                f"{peer['ip']} ↑{format_bytes(peer['sent_bytes'])} "
+                f"↓{format_bytes(peer['received_bytes'])} ({peer['connections']:,})"
+                for peer in top_peers
+            )
+            if len(peers) > len(top_peers):
+                peer_text += f" · +{len(peers) - len(top_peers)} more"
+            console.print(f"  🤝 Peers (sent/received): {peer_text}")
+
+        behavior_parts = []
+        outbound = int(flows_counter.get('as source', 0))
+        inbound = int(flows_counter.get('destination', 0))
+        if total_connections:
+            behavior_parts.append(f"outbound:{outbound:,}, inbound:{inbound:,}")
         protocols = sections.get('protocols', Counter())
         if protocols:
-            proto_line = ', '.join(f"{k}:{v}" for k, v in protocols.items())
-            console.print(f"  ⚙ Protocols: {proto_line}")
-        if flows_counter:
-            flows_line = ', '.join(f"{k}:{v}" for k, v in flows_counter.items())
-            console.print(f"  🧭 Flows: {flows_line}")
+            behavior_parts.append(format_top_counter(protocols))
+        outcomes = connection_outcomes(sections.get('connection_states', Counter()))
+        if outcomes:
+            behavior_parts.append(format_top_counter(outcomes, 4))
+        if behavior_parts:
+            console.print("  ⚙ Behavior: " + ' · '.join(behavior_parts))
+
         dns_queries = sections.get('dns_queries', Counter())
         if dns_queries:
             top_dns = dns_queries.most_common(3)
-            console.print("  📡 DNS Queries: " + ', '.join(f"{k} ({v})" for k, v in top_dns))
+            console.print("  📡 DNS: " + ', '.join(f"{k} ({v})" for k, v in top_dns))
+
         http_hosts = sections.get('http_hosts', Counter())
-        if http_hosts:
-            top_hosts = http_hosts.most_common(2)
-            console.print("  🌐 HTTP Hosts: " + ', '.join(f"{k} ({v})" for k, v in top_hosts))
         http_uris = sections.get('http_uris', Counter())
+        web_parts = []
+        if http_hosts:
+            web_parts.append("hosts " + ', '.join(f"{k} ({v})" for k, v in http_hosts.most_common(2)))
         if http_uris:
-            top_uris = http_uris.most_common(2)
-            console.print("  📄 HTTP URIs: " + ', '.join(f"{k} ({v})" for k, v in top_uris))
+            web_parts.append("URIs " + ', '.join(f"{k} ({v})" for k, v in http_uris.most_common(2)))
+        if web_parts:
+            console.print("  🌐 Web: " + ' · '.join(web_parts))
+
         ssl_issuers = sections.get('ssl_issuers', Counter())
-        if ssl_issuers:
-            top_issuers = ssl_issuers.most_common(1)
-            console.print("  🏛  SSL Issuer: " + ', '.join(f"{k} ({v})" for k, v in top_issuers))
         ssl_subjects = sections.get('ssl_subjects', Counter())
-        if ssl_subjects:
-            top_subjects = ssl_subjects.most_common(1)
-            console.print("  🔐 SSL Subject: " + ', '.join(f"{k} ({v})" for k, v in top_subjects))
         snis = sections.get('snis', Counter())
+        tls_parts = []
         if snis:
-            top_snis = snis.most_common(2)
-            console.print("  📛 SSL SNI: " + ', '.join(f"{k} ({v})" for k, v in top_snis))
+            tls_parts.append("SNI " + ', '.join(f"{k} ({v})" for k, v in snis.most_common(2)))
+        if ssl_issuers:
+            tls_parts.append("issuer " + ', '.join(f"{k} ({v})" for k, v in ssl_issuers.most_common(1)))
+        if ssl_subjects:
+            tls_parts.append("subject " + ', '.join(f"{k} ({v})" for k, v in ssl_subjects.most_common(1)))
+        if tls_parts:
+            console.print("  🔐 TLS: " + ' · '.join(tls_parts))
+
         smb_shares = sections.get('smb_shares', Counter())
-        if smb_shares:
-            top_smb_shares = smb_shares.most_common(3)
-            console.print("  🗄️  SMB Shares: " + ', '.join(f"{k} ({v})" for k, v in top_smb_shares))
         smb_native_fs = sections.get('smb_native_fs', Counter())
-        if smb_native_fs:
-            top_smb_fs = smb_native_fs.most_common(2)
-            console.print("  🧮 SMB Native FS: " + ', '.join(f"{k} ({v})" for k, v in top_smb_fs))
         smb_share_types = sections.get('smb_share_types', Counter())
+        smb_parts = []
+        if smb_shares:
+            smb_parts.append("shares " + ', '.join(f"{k} ({v})" for k, v in smb_shares.most_common(3)))
+        if smb_native_fs:
+            smb_parts.append("filesystems " + ', '.join(f"{k} ({v})" for k, v in smb_native_fs.most_common(2)))
         if smb_share_types:
-            top_smb_types = smb_share_types.most_common(2)
-            console.print("  🏷️  SMB Share Types: " + ', '.join(f"{k} ({v})" for k, v in top_smb_types))
+            smb_parts.append("types " + ', '.join(f"{k} ({v})" for k, v in smb_share_types.most_common(2)))
+        if smb_parts:
+            console.print("  🗄️  SMB: " + ' · '.join(smb_parts))
+
         smtp_profile = result.get('smtp_profiles_raw', {}).get(ip)
         if smtp_profile:
+            smtp_parts = []
             mailfrom_top = smtp_profile['mailfrom'].most_common(2) if 'mailfrom' in smtp_profile else []
             if mailfrom_top:
-                console.print("  ✉️ SMTP Mail From: " + ', '.join(f"{k} ({v})" for k, v in mailfrom_top))
+                smtp_parts.append("from " + ', '.join(f"{k} ({v})" for k, v in mailfrom_top))
             rcpt_top = smtp_profile['rcptto'].most_common(3) if 'rcptto' in smtp_profile else []
             if rcpt_top:
-                console.print("  📬 SMTP Rcpt To: " + ', '.join(f"{k} ({v})" for k, v in rcpt_top))
+                smtp_parts.append("to " + ', '.join(f"{k} ({v})" for k, v in rcpt_top))
             subject_top = smtp_profile['subject'].most_common(2) if 'subject' in smtp_profile else []
             if subject_top:
-                console.print("  📨 SMTP Subjects: " + ', '.join(f"{k} ({v})" for k, v in subject_top))
+                smtp_parts.append("subjects " + ', '.join(f"{k} ({v})" for k, v in subject_top))
             statuses = smtp_profile['status'].most_common(2) if 'status' in smtp_profile else []
             if statuses:
-                console.print("  📮 SMTP Statuses: " + ', '.join(f"{k} ({v})" for k, v in statuses))
+                smtp_parts.append("status " + ', '.join(f"{k} ({v})" for k, v in statuses))
             tls_counts = smtp_profile.get('tls', Counter())
-            if tls_counts:
-                console.print(f"  🔐 SMTP TLS: Enabled ({tls_counts.get('true', 0)}), Disabled ({tls_counts.get('false', 0)}), Unknown ({tls_counts.get('unknown', 0)})")
+            if sum(tls_counts.values()):
+                smtp_parts.append(
+                    f"TLS on:{tls_counts.get('true', 0)}, "
+                    f"off:{tls_counts.get('false', 0)}, unknown:{tls_counts.get('unknown', 0)}"
+                )
+            if smtp_parts:
+                console.print("  ✉️ SMTP: " + ' · '.join(smtp_parts))
+
         dst_ports_src = sections.get('dst_ports_as_src', Counter())
-        if dst_ports_src:
-            top_ports_src = dst_ports_src.most_common(10)
-            console.print("  🎯 Top Dst Ports used (as source): " +
-                          ', '.join(f"{k} ({v})" for k, v in top_ports_src))
         dst_ports_dst = sections.get('dst_ports_as_dst', Counter())
+        service_parts = []
+        if dst_ports_src:
+            service_parts.append("outbound " + ', '.join(f"{k} ({v})" for k, v in dst_ports_src.most_common(3)))
         if dst_ports_dst:
-            top_ports_dst = dst_ports_dst.most_common(10)
-            console.print("  🛡️  Top Dst Ports targeted (as destination): " +
-                          ', '.join(f"{k} ({v})" for k, v in top_ports_dst))
-        if args.only_conn:
-            if dst_ports_src:
-                legacy_ports_src = dst_ports_src.most_common(5)
-                console.print("  🎯 Dst Ports (as source, top 5): " +
-                              ', '.join(f"{k} ({v})" for k, v in legacy_ports_src))
-            if dst_ports_dst:
-                legacy_ports_dst = dst_ports_dst.most_common(5)
-                console.print("  🛡️ Dst Ports (as destination, top 5): " +
-                              ', '.join(f"{k} ({v})" for k, v in legacy_ports_dst))
+            service_parts.append("inbound " + ', '.join(f"{k} ({v})" for k, v in dst_ports_dst.most_common(3)))
+        if service_parts:
+            console.print("  🎯 Services: " + ' · '.join(service_parts))
         shown_any = True
 
     if not shown_any:
@@ -727,6 +937,7 @@ def build_export_data(result: Dict[str, object], args: argparse.Namespace, top_l
     global_section = {
         "unique_src_ips": len(local_src_ips),
         "unique_dst_ips": len(local_dst_ips),
+        "total_connections": int(sum(result['proto_counter'].values())),
         "total_protocols": len(result['proto_counter']),
         "top_protocols": counter_to_list(result['proto_counter'], min(top_limit, len(result['proto_counter']))),
         "top_dns_queries": counter_to_list(filter_local_counter(result['dns_query_counter'], args.local_only), top_limit),
@@ -772,7 +983,11 @@ def build_export_data(result: Dict[str, object], args: argparse.Namespace, top_l
         if not should_include_ip(ip, args, result['non_conn_ips']):
             continue
         flows_counter = sections.get('flows', Counter())
-        total_flows = int(sum(flows_counter.values()))
+        total_connections = connection_count(sections)
+        traffic = sections.get('traffic', Counter())
+        peers = peer_summaries(sections, top_limit)
+        span_seconds = activity_span_seconds(sections)
+        bounds = sections.get('time_bounds', Counter())
         ip_meta = classify_ip(ip)
         category = ip_meta["category"]
         network = ip_meta["network"]
@@ -783,12 +998,29 @@ def build_export_data(result: Dict[str, object], args: argparse.Namespace, top_l
             "ip": ip,
             "is_local": is_local_ip(ip),
             "seen_in_non_conn": ip in result['non_conn_ips'],
-            "total_flows": total_flows,
+            "connection_count": total_connections,
+            "total_flows": total_connections,
+            "peer_count": len(sections.get('peer_connections', Counter())),
+            "activity_span_seconds": span_seconds,
+            "first_seen": bounds.get('first_seen'),
+            "last_seen": bounds.get('last_seen'),
+            "traffic": {
+                "sent_bytes": int(traffic.get('sent_bytes', 0)),
+                "received_bytes": int(traffic.get('received_bytes', 0)),
+                "sent_packets": int(traffic.get('sent_packets', 0)),
+                "received_packets": int(traffic.get('received_packets', 0)),
+            },
+            "top_peers": peers,
             "category": category,
             "network": network,
             "ip_version": ip_meta["version"],
             "protocols": counter_to_list(sections.get('protocols', Counter()), top_limit),
             "flows": counter_to_list(flows_counter, top_limit),
+            "connection_outcomes": counter_to_list(
+                connection_outcomes(sections.get('connection_states', Counter())),
+                top_limit,
+            ),
+            "services": counter_to_list(sections.get('services', Counter()), top_limit),
             "dns_queries": counter_to_list(sections.get('dns_queries', Counter()), top_limit),
             "http_hosts": counter_to_list(sections.get('http_hosts', Counter()), top_limit),
             "http_uris": counter_to_list(sections.get('http_uris', Counter()), top_limit),
@@ -831,7 +1063,7 @@ def build_export_data(result: Dict[str, object], args: argparse.Namespace, top_l
                 "tls": [],
             }
         hosts.append(host_entry)
-    hosts.sort(key=lambda item: item['total_flows'], reverse=True)
+    hosts.sort(key=lambda item: item['connection_count'], reverse=True)
 
     networks_sorted = sorted(network_counts.items(), key=lambda kv: kv[1], reverse=True)
     network_limit = 60
@@ -1262,7 +1494,7 @@ footer {
     <div class="filters">
       <label><input type="checkbox" id="filterLocal"> Local only</label>
       <label><input type="checkbox" id="filterNonConn"> Require non-conn activity</label>
-      <label>Min flows <input type="number" id="filterFlows" min="0" value="0" style="width:80px;"></label>
+      <label>Min connections <input type="number" id="filterFlows" min="0" value="0" style="width:80px;"></label>
       <label>Category
         <select id="filterCategory">
           <option value="all">All categories</option>
@@ -1312,7 +1544,7 @@ function setStatCard(key, value, detail) {
 setStatCard('uniqueSrcIps', stats.uniqueSrcIps, `${DASHBOARD_DATA.totals.hosts_with_non_conn || 0} hosts with non-conn logs`);
 setStatCard('uniqueDstIps', stats.uniqueDstIps, `${DASHBOARD_DATA.global.unique_smb_dst_ips || 0} SMB destinations`);
 setStatCard('totalProtocols', stats.totalProtocols, `Top: ${stats.topProtocol ? stats.topProtocol.label : 'n/a'}`);
-setStatCard('topProtocol', stats.topProtocol ? stats.topProtocol.label : '-', stats.topProtocol ? `${stats.topProtocol.count} flows` : '');
+setStatCard('topProtocol', stats.topProtocol ? stats.topProtocol.label : '-', stats.topProtocol ? `${stats.topProtocol.count} connections` : '');
 setStatCard('topDns', stats.topDns ? stats.topDns.label : '-', stats.topDns ? `${stats.topDns.count} requests` : '');
 setStatCard('topHttp', stats.topHttp ? stats.topHttp.label : '-', stats.topHttp ? `${stats.topHttp.count} hits` : '');
 
@@ -1487,13 +1719,44 @@ function renderTags(items) {
   }).join('');
 }
 
+function formatBytes(value) {
+  let amount = Math.max(0, Number(value) || 0);
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  let unitIndex = 0;
+  while (amount >= 1024 && unitIndex < units.length - 1) {
+    amount /= 1024;
+    unitIndex += 1;
+  }
+  const digits = unitIndex === 0 || amount >= 100 ? 0 : 1;
+  return `${amount.toFixed(digits)} ${units[unitIndex]}`;
+}
+
+function formatDuration(seconds) {
+  let remaining = Math.max(0, Math.floor(Number(seconds) || 0));
+  const days = Math.floor(remaining / 86400);
+  remaining %= 86400;
+  const hours = Math.floor(remaining / 3600);
+  remaining %= 3600;
+  const minutes = Math.floor(remaining / 60);
+  const secs = remaining % 60;
+  if (days) return `${days}d ${hours}h`;
+  if (hours) return `${hours}h ${minutes}m`;
+  if (minutes) return `${minutes}m ${secs}s`;
+  return `${secs}s`;
+}
+
+function renderSection(title, items) {
+  if (!items || !items.length) return '';
+  return `<div class="section"><h4>${title}</h4><div class="tag-list">${renderTags(items)}</div></div>`;
+}
+
 function createHostCard(host) {
   const card = document.createElement('article');
   card.className = 'host-card' + (host.is_local ? ' local' : '');
   card.dataset.ip = host.ip;
   card.dataset.isLocal = host.is_local ? 'true' : 'false';
   card.dataset.nonConn = host.seen_in_non_conn ? 'true' : 'false';
-  card.dataset.totalFlows = host.total_flows || 0;
+  card.dataset.totalFlows = host.connection_count || host.total_flows || 0;
   card.dataset.category = host.category || 'Unknown';
   card.dataset.network = host.network || 'Unknown';
   const searchBits = new Set();
@@ -1505,6 +1768,7 @@ function createHostCard(host) {
   (host.http_uris || []).forEach(item => searchBits.add(item.label));
   (host.dst_ports_as_src || []).forEach(item => searchBits.add(item.label));
   (host.dst_ports_as_dst || []).forEach(item => searchBits.add(item.label));
+  (host.top_peers || []).forEach(item => searchBits.add(item.ip));
   const smtpActivity = host.smtp_activity || {};
   ['mailfrom','rcptto','subject','helo','status','msg_id','trans_depth'].forEach(key => {
     (smtpActivity[key] || []).forEach(item => searchBits.add(item.label));
@@ -1520,71 +1784,73 @@ function createHostCard(host) {
     badges.push('<span class="badge-pill" style="background:rgba(34,197,94,0.2);color:#bbf7d0;">Non-conn activity</span>');
   }
 
+  const flowCounts = Object.fromEntries((host.flows || []).map(item => [item.label, item.count]));
+  const behaviorItems = [
+    { label: 'outbound', count: flowCounts['as source'] || 0 },
+    { label: 'inbound', count: flowCounts.destination || 0 },
+    ...(host.protocols || []),
+    ...(host.connection_outcomes || [])
+  ].filter(item => item.count);
+  const peerItems = (host.top_peers || []).slice(0, 3).map(peer => ({
+    label: `${peer.ip} ↑${formatBytes(peer.sent_bytes)} ↓${formatBytes(peer.received_bytes)}`,
+    count: peer.connections
+  }));
+  const webItems = [
+    ...(host.http_hosts || []).slice(0, 3).map(item => ({ label: `host: ${item.label}`, count: item.count })),
+    ...(host.http_uris || []).slice(0, 3).map(item => ({ label: `URI: ${item.label}`, count: item.count }))
+  ];
+  const tlsItems = [
+    ...(host.snis || []).slice(0, 3).map(item => ({ label: `SNI: ${item.label}`, count: item.count })),
+    ...(host.ssl_issuers || []).slice(0, 2).map(item => ({ label: `issuer: ${item.label}`, count: item.count })),
+    ...(host.ssl_subjects || []).slice(0, 2).map(item => ({ label: `subject: ${item.label}`, count: item.count }))
+  ];
+  const smbItems = [
+    ...(host.smb_shares || []).slice(0, 3).map(item => ({ label: `share: ${item.label}`, count: item.count })),
+    ...(host.smb_native_fs || []).slice(0, 2).map(item => ({ label: `FS: ${item.label}`, count: item.count })),
+    ...(host.smb_share_types || []).slice(0, 2).map(item => ({ label: `type: ${item.label}`, count: item.count }))
+  ];
+  const serviceItems = [
+    ...(host.dst_ports_as_src || []).slice(0, 3).map(item => ({ label: `outbound: ${item.label}`, count: item.count })),
+    ...(host.dst_ports_as_dst || []).slice(0, 3).map(item => ({ label: `inbound: ${item.label}`, count: item.count }))
+  ];
+  const smtpItems = [
+    ...(smtpActivity.mailfrom || []).slice(0, 2).map(item => ({ label: `from: ${item.label}`, count: item.count })),
+    ...(smtpActivity.rcptto || []).slice(0, 3).map(item => ({ label: `to: ${item.label}`, count: item.count })),
+    ...(smtpActivity.subject || []).slice(0, 2).map(item => ({ label: `subject: ${item.label}`, count: item.count })),
+    ...(smtpActivity.status || []).slice(0, 2).map(item => ({ label: `status: ${item.label}`, count: item.count })),
+    ...(smtpActivity.tls || [])
+  ];
+  const traffic = host.traffic || {};
+  const connectionTotal = host.connection_count || host.total_flows || 0;
+  const trafficSection = connectionTotal ? `
+    <div class="section">
+      <h4>↕ Traffic</h4>
+      <div class="metrics">
+        <span>Sent: <strong>${formatBytes(traffic.sent_bytes)}</strong> (${(traffic.sent_packets || 0).toLocaleString()} pkts)</span>
+        <span>Received: <strong>${formatBytes(traffic.received_bytes)}</strong> (${(traffic.received_packets || 0).toLocaleString()} pkts)</span>
+      </div>
+    </div>` : '';
+
   card.innerHTML = `
     <div class="host-title">🔹 ${escapeHtml(host.ip)}</div>
     <div class="metrics">
-      <span>Flows: <strong>${(host.total_flows || 0).toLocaleString()}</strong></span>
-      <span>Protocols: ${escapeHtml((host.protocols || []).map(item => item.label).join(', ') || 'n/a')}</span>
+      <span>Connections: <strong>${connectionTotal.toLocaleString()}</strong></span>
+      <span>Peers: <strong>${(host.peer_count || 0).toLocaleString()}</strong></span>
+      ${host.activity_span_seconds !== null && host.activity_span_seconds !== undefined
+        ? `<span>Span: <strong>${formatDuration(host.activity_span_seconds)}</strong></span>` : ''}
       <span>Category: <strong>${escapeHtml(host.category || 'Unknown')}</strong></span>
       <span>Network: <strong>${escapeHtml(host.network || 'Unknown')}</strong></span>
       ${badges.join(' ')}
     </div>
-    <div class="section">
-      <h4>🧭 Flows</h4>
-      <div class="tag-list">${renderTags(host.flows)}</div>
-    </div>
-    <div class="section">
-      <h4>📡 DNS</h4>
-      <div class="tag-list">${renderTags(host.dns_queries)}</div>
-    </div>
-    <div class="section">
-      <h4>🌐 HTTP Hosts</h4>
-      <div class="tag-list">${renderTags(host.http_hosts)}</div>
-    </div>
-    <div class="section">
-      <h4>📄 HTTP URIs</h4>
-      <div class="tag-list">${renderTags(host.http_uris)}</div>
-    </div>
-    <div class="section">
-      <h4>🔐 SSL</h4>
-      <div class="tag-list">${renderTags(host.ssl_issuers)}</div>
-    </div>
-    <div class="section">
-      <h4>📛 SSL SNI</h4>
-      <div class="tag-list">${renderTags(host.snis)}</div>
-    </div>
-    <div class="section">
-      <h4>🗄️ SMB Shares</h4>
-      <div class="tag-list">${renderTags(host.smb_shares)}</div>
-    </div>
-    <div class="section">
-      <h4>🎯 Ports Used (as source)</h4>
-      <div class="tag-list">${renderTags(host.dst_ports_as_src)}</div>
-    </div>
-    <div class="section">
-      <h4>🛡️ Ports Targeted (as destination)</h4>
-      <div class="tag-list">${renderTags(host.dst_ports_as_dst)}</div>
-    </div>
-    <div class="section">
-      <h4>✉️ SMTP Mail From</h4>
-      <div class="tag-list">${renderTags((host.smtp_activity || {}).mailfrom)}</div>
-    </div>
-    <div class="section">
-      <h4>📬 SMTP Recipients</h4>
-      <div class="tag-list">${renderTags((host.smtp_activity || {}).rcptto)}</div>
-    </div>
-    <div class="section">
-      <h4>📨 SMTP Subjects</h4>
-      <div class="tag-list">${renderTags((host.smtp_activity || {}).subject)}</div>
-    </div>
-    <div class="section">
-      <h4>📮 SMTP Status</h4>
-      <div class="tag-list">${renderTags((host.smtp_activity || {}).status)}</div>
-    </div>
-    <div class="section">
-      <h4>🔐 SMTP TLS</h4>
-      <div class="tag-list">${renderTags((host.smtp_activity || {}).tls)}</div>
-    </div>
+    ${trafficSection}
+    ${renderSection('🤝 Top peers (sent/received)', peerItems)}
+    ${renderSection('⚙ Behavior', behaviorItems)}
+    ${renderSection('📡 DNS', (host.dns_queries || []).slice(0, 3))}
+    ${renderSection('🌐 Web', webItems)}
+    ${renderSection('🔐 TLS', tlsItems)}
+    ${renderSection('🗄️ SMB', smbItems)}
+    ${renderSection('✉️ SMTP', smtpItems)}
+    ${renderSection('🎯 Services', serviceItems)}
   `;
   return card;
 }
